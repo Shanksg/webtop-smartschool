@@ -1,6 +1,8 @@
 # Configuration and credentials
 config/config.yaml
 config/homework_state.json
+config/token.txt
+config/token_cache.json
 
 # Logs
 logs/
@@ -40,6 +42,12 @@ wheels/
 # OS
 .DS_Store
 Thumbs.db
+
+# Screenshots and debug images (may contain sensitive info)
+*.png
+*.jpg
+*.jpeg
+*.gif
 
 # Docker
 .dockerignore
