@@ -17,6 +17,14 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from urllib.parse import unquote
 
+# MQTT support (optional)
+try:
+    import paho.mqtt.client as mqtt
+    MQTT_AVAILABLE = True
+except ImportError:
+    MQTT_AVAILABLE = False
+    logger.warning("paho-mqtt not installed. MQTT entities will not be created. Install with: pip install paho-mqtt")
+
 # Configure logging
 log_dir = Path("/app/logs") if Path("/app").exists() else Path("./logs")
 log_dir.mkdir(exist_ok=True)
@@ -29,8 +37,10 @@ class SmartSchoolMonitor:
         self.token_file = Path("/app/config/token_cache.json") if Path("/app/config").exists() else Path("./config/token_cache.json")
         self.students = []
         self.notifiers = []
+        self.mqtt_client = None
         self.load_config()
         self.setup_notifiers()
+        self.setup_mqtt()
         self.load_state()
 
     def load_config(self):
@@ -65,6 +75,154 @@ class SmartSchoolMonitor:
                     logger.info(f"Added notifier: {notifier}")
                 else:
                     logger.error(f"Failed to add notifier: {notifier}")
+
+    def setup_mqtt(self):
+        """Setup MQTT client for Home Assistant entity creation"""
+        if not MQTT_AVAILABLE:
+            logger.info("MQTT not available - skipping MQTT entity setup")
+            return
+
+        mqtt_broker = os.getenv('MQTT_BROKER', '')
+        if not mqtt_broker:
+            logger.info("MQTT_BROKER not configured - skipping MQTT entity setup")
+            return
+
+        try:
+            mqtt_port = int(os.getenv('MQTT_PORT', '1883'))
+            mqtt_user = os.getenv('MQTT_USER', '')
+            mqtt_pass = os.getenv('MQTT_PASS', '')
+
+            self.mqtt_client = mqtt.Client()
+
+            if mqtt_user and mqtt_pass:
+                self.mqtt_client.username_pw_set(mqtt_user, mqtt_pass)
+
+            self.mqtt_client.connect(mqtt_broker, mqtt_port, 60)
+            self.mqtt_client.loop_start()
+
+            logger.info(f"✓ MQTT connected to {mqtt_broker}:{mqtt_port}")
+
+        except Exception as e:
+            logger.error(f"Failed to setup MQTT: {e}")
+            self.mqtt_client = None
+
+    def publish_mqtt_discovery(self, student_name):
+        """Publish MQTT discovery messages for Home Assistant"""
+        if not self.mqtt_client:
+            return
+
+        try:
+            # Create a safe ASCII device ID from student name (use hash for Hebrew names)
+            import hashlib
+            name_hash = hashlib.md5(student_name.encode()).hexdigest()[:8]
+            device_id = f"student_{name_hash}"
+
+            # Device info shared by all entities
+            device_info = {
+                "identifiers": [f"smartschool_{device_id}"],
+                "name": f"SmartSchool - {student_name}",
+                "manufacturer": "SmartSchool Monitor",
+                "model": "Homework Tracker"
+            }
+
+            # 1. Homework Count Sensor
+            count_config = {
+                "name": f"SmartSchool {student_name} Homework Count",
+                "unique_id": f"smartschool_{device_id}_homework_count",
+                "state_topic": f"smartschool/{device_id}/state",
+                "value_template": "{{ value_json.count }}",
+                "icon": "mdi:book-open-variant",
+                "device": device_info
+            }
+            self.mqtt_client.publish(
+                f"homeassistant/sensor/smartschool_{device_id}_count/config",
+                json.dumps(count_config),
+                retain=True
+            )
+
+            # 2. Homework Details Sensor
+            details_config = {
+                "name": f"SmartSchool {student_name} Homework Details",
+                "unique_id": f"smartschool_{device_id}_homework_details",
+                "state_topic": f"smartschool/{device_id}/state",
+                "value_template": "{{ value_json.details }}",
+                "icon": "mdi:text-box-multiple",
+                "device": device_info
+            }
+            self.mqtt_client.publish(
+                f"homeassistant/sensor/smartschool_{device_id}_details/config",
+                json.dumps(details_config),
+                retain=True
+            )
+
+            # 3. Last Check Sensor
+            last_check_config = {
+                "name": f"SmartSchool {student_name} Last Check",
+                "unique_id": f"smartschool_{device_id}_last_check",
+                "state_topic": f"smartschool/{device_id}/state",
+                "value_template": "{{ value_json.last_check }}",
+                "icon": "mdi:clock-check",
+                "device_class": "timestamp",
+                "device": device_info
+            }
+            self.mqtt_client.publish(
+                f"homeassistant/sensor/smartschool_{device_id}_last_check/config",
+                json.dumps(last_check_config),
+                retain=True
+            )
+
+            logger.info(f"Published MQTT discovery for {student_name}")
+
+        except Exception as e:
+            logger.error(f"Failed to publish MQTT discovery: {e}")
+
+    def publish_mqtt_state(self, student_name, homework_list):
+        """Publish current homework state to MQTT"""
+        if not self.mqtt_client:
+            return
+
+        try:
+            # Use same device ID as discovery
+            import hashlib
+            name_hash = hashlib.md5(student_name.encode()).hexdigest()[:8]
+            device_id = f"student_{name_hash}"
+
+            # Filter to today's homework
+            today = datetime.now().strftime('%Y-%m-%d')
+            today_homework = [hw for hw in homework_list if hw.get('date', '')[:10] == today]
+
+            # Format homework details
+            if today_homework:
+                details = f"Today's homework for {student_name}:\n\n"
+                for idx, hw in enumerate(today_homework, 1):
+                    subject = hw.get('subject', 'Unknown')
+                    homework = hw.get('homework', '')
+                    teacher = hw.get('teacher', '')
+                    details += f"{idx}. {subject} - {teacher}\n"
+                    details += f"   {homework[:200]}\n"
+                    if len(homework) > 200:
+                        details += "   ...\n"
+                    details += "\n"
+            else:
+                details = f"No homework for today ({today})"
+
+            # Publish state
+            state = {
+                "count": len(today_homework),
+                "details": details,
+                "last_check": datetime.now().isoformat()
+            }
+
+            self.mqtt_client.publish(
+                f"smartschool/{device_id}/state",
+                json.dumps(state),
+                retain=True
+            )
+
+            logger.info(f"Published MQTT state for {student_name}: {len(today_homework)} homework items")
+
+        except Exception as e:
+            logger.error(f"Failed to publish MQTT state: {e}")
 
     def load_state(self):
         """Load previous homework state"""
@@ -597,6 +755,11 @@ class SmartSchoolMonitor:
                 if k in current_hashes
             }
 
+            # Publish MQTT discovery (first time) and state (always)
+            # This creates/updates Home Assistant entities
+            self.publish_mqtt_discovery(student_name)
+            self.publish_mqtt_state(student_name, homework_items)
+
             # Send notifications if new homework found
             if new_homework:
                 self.send_notification(student_name, new_homework)
@@ -644,17 +807,12 @@ class SmartSchoolMonitor:
 
             logger.info(f"Sending notification: {title}")
 
-            # Check if using webhook (json:// or jsons://)
-            notifiers_str = os.getenv('NOTIFIERS', '')
-            if 'json://' in notifiers_str or 'jsons://' in notifiers_str:
-                # Send directly via requests for webhooks
-                self._send_webhook_notification(notifiers_str, title, message)
-            else:
-                # Use Apprise for other notification types
-                self.apobj.notify(
-                    body=message,
-                    title=title
-                )
+            # Use Apprise to send to all configured notifiers
+            # Apprise handles different protocols (webhook, MQTT, etc.) automatically
+            self.apobj.notify(
+                body=message,
+                title=title
+            )
 
         except Exception as e:
             logger.error(f"Failed to send notification: {e}")
