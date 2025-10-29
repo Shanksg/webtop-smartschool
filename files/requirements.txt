@@ -1,0 +1,7 @@
+requests==2.31.0
+schedule==1.2.0
+pyyaml==6.0.1
+loguru==0.7.2
+apprise==1.9.5
+urllib3==2.1.0
+undetected-chromedriver==3.5.4

@@ -1,0 +1,260 @@
+# ============================================================
+# SENSITIVE DATA - NEVER COMMIT THESE!
+# ============================================================
+
+# Configuration and credentials (PASSWORDS!)
+config/config.yaml
+config/token_cache.json
+config/token.txt
+config/homework_state.json
+config/*.json
+config/*.yaml
+config/*.txt
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# ============================================================
+# TEST & DEBUG FILES
+# ============================================================
+
+# Test scripts (many created during development)
+test_*.py
+debug_*.py
+inspect_*.py
+*_test.py
+*_debug.py
+
+# Specific test/debug files
+test_setup.py
+test_with_token.py
+test_token_simple.py
+test_api_direct.py
+test_api_methods.py
+test_with_params.py
+test_curl_login.py
+test_monitor.py
+view_homework.py
+test_new_homework.py
+
+# Manual/helper scripts (for development only)
+manual_token_helper.py
+manual_token_extractor.py
+selenium_login.py
+simple_browser_login.py
+auto_login_token.py
+extract_token_from_browser.py
+fully_automated_login.py
+auto_token_refresh.py
+save_token.py
+
+# Old/backup files
+smartschool_monitor.py
+*_old.py
+*_backup.py
+*.bak
+
+# Temporary scripts from /tmp
+/tmp/*.py
+/tmp/*.sh
+/tmp/*.log
+/tmp/*.md
+
+# ============================================================
+# LOGS & OUTPUT
+# ============================================================
+
+logs/
+*.log
+*.log.*
+log/
+*.out
+*.err
+
+# Test output
+test_output.log
+output.log
+
+# ============================================================
+# PYTHON
+# ============================================================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# ============================================================
+# BROWSER AUTOMATION
+# ============================================================
+
+# Chrome driver files
+chromedriver
+chromedriver.exe
+undetected_chromedriver/
+.wdm/
+
+# Selenium screenshots
+screenshot*.png
+*.png
+
+# Chrome user data
+chrome_data/
+user_data/
+
+# ============================================================
+# IDE & EDITORS
+# ============================================================
+
+# VSCode
+.vscode/
+*.code-workspace
+
+# PyCharm
+.idea/
+*.iml
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# ============================================================
+# OPERATING SYSTEM
+# ============================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+
+# ============================================================
+# DOCKER
+# ============================================================
+
+.dockerignore
+docker-compose.override.yml
+
+# ============================================================
+# DOCUMENTATION (if sensitive)
+# ============================================================
+
+# Keep public docs, ignore sensitive ones
+# SECURITY_REVIEW.md  # Keep this - it's not sensitive
+# SYSTEM_OVERVIEW.md  # Keep this - it's documentation
+MANUAL_TOKEN_EXTRACTION.md  # May contain URLs/examples
+
+# ============================================================
+# MISC
+# ============================================================
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Archives
+*.zip
+*.tar.gz
+*.rar
+
+# Jupyter Notebooks checkpoints
+.ipynb_checkpoints/
+
+# pyenv
+.python-version
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/

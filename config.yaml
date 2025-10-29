@@ -1,0 +1,11 @@
+# SmartSchool Homework Monitor Configuration
+# Save this file as config/config.yaml
+
+students:
+  - name: "Student Name 1"
+    username: "student_username_1"
+    password: "student_password_1"
+  
+  - name: "Student Name 2"
+    username: "student_username_2"
+    password: "student_password_2"

@@ -1,0 +1,109 @@
+╔════════════════════════════════════════════════════════════════╗
+║           📚 SMARTSCHOOL MONITOR - COMMAND CHEATSHEET          ║
+╚════════════════════════════════════════════════════════════════╝
+
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ 🔑 AUTHENTICATION (Once per day)                              ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+  python manual_token_extractor.py
+
+  When to run: Token expires every ~23 hours
+  What it does: Opens browser → You login → Token cached
+
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ 🏠 CONNECT TO HOME ASSISTANT (One-time setup)                 ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+  export NOTIFIERS="json://192.168.1.100:8123/api/webhook/smartschool_homework"
+                          ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
+                    YOUR Home Assistant IP
+
+  Make permanent:
+  echo 'export NOTIFIERS="json://192.168.1.100:8123/api/webhook/smartschool_homework"' >> ~/.zshrc
+  source ~/.zshrc
+
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ 🚀 RUN THE MONITOR                                            ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+  # Foreground (see output, Ctrl+C to stop)
+  python smartschool_monitor_v2.py
+
+  # Background (keeps running)
+  nohup python smartschool_monitor_v2.py > monitor.log 2>&1 &
+
+  # Stop it
+  pkill -f smartschool_monitor_v2.py
+
+  # Check if running
+  ps aux | grep smartschool_monitor
+
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ 🧪 TESTING                                                     ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+  python view_homework.py          View tracked homework & token status
+  python test_monitor.py           Quick check (no changes)
+  python test_new_homework.py      Simulate new homework (triggers notify)
+  ./run_tests.sh                   Run all tests
+
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ 📋 LOGS & DEBUG                                                ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+  tail -20 logs/smartschool-monitor.log       Last 20 lines
+  tail -f logs/smartschool-monitor.log        Follow live
+  cat logs/smartschool-monitor.log            Full log
+
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ 📖 DOCUMENTATION                                               ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+  cat QUICK_START.md                Quick 5-step guide
+  cat HOME_ASSISTANT_SETUP.md       Detailed HA integration
+  cat TESTING_GUIDE.md              Full testing instructions
+  cat CHEATSHEET.txt                This file!
+
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ 🔧 TROUBLESHOOTING                                             ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+  Problem: Token expired
+  Solution: python manual_token_extractor.py
+
+  Problem: Not getting notifications
+  Solution: Check $NOTIFIERS is set correctly
+           echo $NOTIFIERS
+
+  Problem: Connection error
+  Solution: Check Home Assistant IP
+           ping 192.168.1.100
+
+  Problem: Webhook not working
+  Test it: curl -X POST http://192.168.1.100:8123/api/webhook/smartschool_homework \
+           -H 'Content-Type: application/json' \
+           -d '{"title":"Test","message":"Testing"}'
+
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ ⚡ QUICK START (Copy-Paste)                                    ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+  # 1. Get token
+  python manual_token_extractor.py
+
+  # 2. Set Home Assistant URL (REPLACE IP!)
+  export NOTIFIERS="json://192.168.1.100:8123/api/webhook/smartschool_homework"
+
+  # 3. Test it
+  python test_new_homework.py
+
+  # 4. Run it
+  python smartschool_monitor_v2.py
+
+╔════════════════════════════════════════════════════════════════╗
+║                      📞 NEED HELP?                             ║
+║  1. Check logs: tail logs/smartschool-monitor.log             ║
+║  2. View status: python view_homework.py                      ║
+║  3. Read docs: cat QUICK_START.md                             ║
+╚════════════════════════════════════════════════════════════════╝

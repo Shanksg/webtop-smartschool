@@ -1,0 +1,45 @@
+version: "3.8"
+
+services:
+  smartschool-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: smartschool-homework-monitor
+    restart: always
+    environment:
+      # Schedule times for homework checks (comma-separated, 24-hour format)
+      # Default: 12:00,16:00,20:00
+      SCHEDULES: "12:00,16:00,20:00"
+      
+      # Notifiers configuration using Apprise
+      # Examples:
+      # Home Assistant: hassio://user@hostname/accesstoken
+      # Telegram: tgram://bottoken/ChatID
+      # Discord: discord://avatar@webhook_id/webhook_token
+      # Email: mailto://user:password@gmail.com/email@example.com
+      # Multiple notifiers separated by comma
+      NOTIFIERS: "hassio://user@YOUR_HOME_ASSISTANT_IP/YOUR_ACCESS_TOKEN"
+      
+      PYTHONUNBUFFERED: "1"
+    
+    volumes:
+      # Mount the config directory for credentials
+      - ./config:/app/config
+      # Mount logs directory
+      - ./logs:/app/logs
+    
+    # Optional: Network configuration if Home Assistant is on different network
+    # networks:
+    #   - homeassistant_network
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# Optional: If you need to connect to Home Assistant network
+# networks:
+#   homeassistant_network:
+#     external: true
