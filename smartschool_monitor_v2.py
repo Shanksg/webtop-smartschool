@@ -9,13 +9,8 @@ from loguru import logger
 import apprise
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-import hashlib
-import undetected_chromedriver as uc
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 from urllib.parse import unquote
+import hashlib
 
 # MQTT support (optional)
 try:
@@ -318,271 +313,24 @@ class SmartSchoolMonitor:
         except Exception as e:
             logger.error(f"Failed to save token cache: {e}")
 
-    def login_with_selenium(self, username, password):
-        """Fully automated login using undetected-chromedriver"""
-        logger.info(f"Starting automated login for {username}")
+    def request_manual_token(self, username):
+        """Request user to manually provide token"""
+        logger.info(f"Token required for user: {username}")
+        logger.info("Please add your token to: config/token.txt")
 
-        # Check if we're running in Docker (headless)
-        is_docker = os.path.exists('/.dockerenv')
-        headless = is_docker or os.getenv('HEADLESS', 'false').lower() == 'true'  # Changed default to false
+        # Check if token file exists
+        token_file = Path("config/token.txt")
+        if token_file.exists():
+            token = token_file.read_text().strip()
+            if token:
+                logger.info("Found token in config/token.txt")
+                # URL-decode the token if it's encoded
+                if '%' in token:
+                    token = unquote(token)
+                    logger.debug("Decoded URL-encoded token from file")
+                return token
 
-        # Setup undetected Chrome
-        options = uc.ChromeOptions()
-
-        if headless:
-            logger.info("Running in headless mode")
-            options.add_argument('--headless=new')
-            options.add_argument('--disable-gpu')
-        else:
-            logger.info("Running in non-headless mode (better for reCAPTCHA)")
-
-        options.add_argument('--no-sandbox')
-        options.add_argument('--disable-dev-shm-usage')
-        options.add_argument('--disable-blink-features=AutomationControlled')
-        options.add_argument('--window-size=1920,1080')
-        options.add_argument('--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36')
-
-        # Additional options to help with reCAPTCHA
-        options.add_argument('--disable-web-security')
-        options.add_argument('--allow-running-insecure-content')
-
-        driver = None
-
-        try:
-            driver = uc.Chrome(options=options, use_subprocess=True, version_main=None)
-            logger.info("Browser initialized")
-
-            # Navigate to login
-            login_url = "https://webtop.smartschool.co.il/account/login"
-            driver.get(login_url)
-            logger.info("Loaded login page")
-
-            # Wait for page
-            time.sleep(10)
-
-            # Remove overlays with JavaScript
-            js_cleanup = """
-            document.querySelectorAll('[class*="modal"], [class*="overlay"], [class*="cookie"]').forEach(el => el.remove());
-            document.body.style.overflow = 'auto';
-            return 'cleaned';
-            """
-            driver.execute_script(js_cleanup)
-            logger.info("Cleaned page overlays")
-
-            # Find and fill username
-            wait = WebDriverWait(driver, 20)
-            username_field = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='text']")))
-            username_field.click()
-            time.sleep(0.5)
-            username_field.send_keys(username)
-            logger.info("Entered username")
-            time.sleep(1)
-
-            # Find and fill password
-            password_field = driver.find_element(By.CSS_SELECTOR, "input[type='password']")
-            password_field.click()
-            time.sleep(0.5)
-            password_field.send_keys(password)
-            logger.info("Entered password")
-            time.sleep(2)
-
-            # Handle reCAPTCHA checkbox
-            logger.info("Looking for reCAPTCHA checkbox...")
-            try:
-                # Wait for reCAPTCHA iframe to load
-                time.sleep(3)
-
-                # Switch to reCAPTCHA iframe
-                recaptcha_iframe = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "iframe[src*='recaptcha']")))
-                driver.switch_to.frame(recaptcha_iframe)
-                logger.info("Switched to reCAPTCHA iframe")
-
-                # Click the checkbox
-                time.sleep(2)
-                recaptcha_checkbox = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".recaptcha-checkbox-border")))
-                recaptcha_checkbox.click()
-                logger.info("Clicked reCAPTCHA checkbox")
-
-                # Switch back to main content
-                driver.switch_to.default_content()
-                logger.info("Switched back to main content")
-
-                # Wait for reCAPTCHA to validate
-                time.sleep(5)
-
-            except Exception as e:
-                logger.warning(f"Could not handle reCAPTCHA: {e}")
-                # Switch back to main content in case we're stuck in iframe
-                try:
-                    driver.switch_to.default_content()
-                except:
-                    pass
-
-            # Submit
-            logger.info("Submitting form...")
-            try:
-                # Try to find and click the login button
-                login_button = driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
-                login_button.click()
-                logger.info("Clicked login button")
-            except:
-                # Fallback to pressing Enter
-                password_field.send_keys(Keys.RETURN)
-                logger.info("Submitted form via Enter key")
-
-            # Wait for login (max 90 seconds - increased for reCAPTCHA)
-            logger.info("Waiting for login to complete (this may take longer with reCAPTCHA)...")
-            start_time = time.time()
-            web_token = None
-            login_successful = False
-
-            while time.time() - start_time < 90:
-                current_url = driver.current_url.lower()
-
-                # Check if we've left the login page
-                if 'login' not in current_url and 'webtop.smartschool.co.il' in current_url:
-                    logger.info(f"Login successful - URL changed to: {driver.current_url}")
-                    login_successful = True
-                    break
-
-                # Check for token in cookies during wait
-                cookies = driver.get_cookies()
-                for cookie in cookies:
-                    if cookie['name'] == 'webToken' and cookie['value']:
-                        web_token = cookie['value']
-                        logger.info("Token found in cookies during wait")
-                        login_successful = True
-                        break
-
-                if login_successful:
-                    break
-
-                time.sleep(2)
-
-            if not login_successful:
-                logger.error("Login did not complete within timeout period")
-                logger.info(f"Final URL: {driver.current_url}")
-                driver.save_screenshot("login_timeout.png")
-                return None, None
-
-            # Give the app time to set all cookies and tokens
-            logger.info("Login successful, waiting for tokens to be set...")
-            time.sleep(5)
-
-            # Navigate to API server domain to get the token cookie
-            try:
-                logger.info("Navigating to API server to get token cookie...")
-                driver.get("https://webtopserver.smartschool.co.il/")
-                time.sleep(3)
-            except Exception as e:
-                logger.warning(f"Failed to navigate to API server: {e}")
-
-            # Extract final token from API server domain
-            time.sleep(2)
-
-            # Debug: Print all cookies from API server
-            cookies = driver.get_cookies()
-            logger.info(f"All cookies found on API server: {[c['name'] for c in cookies]}")
-
-            for cookie in cookies:
-                logger.debug(f"Cookie: {cookie['name']} = {cookie['value'][:50] if len(cookie['value']) > 50 else cookie['value']}")
-                if cookie['name'] == 'webToken':
-                    web_token = cookie['value']
-                    # URL-decode if needed
-                    if web_token and '%' in web_token:
-                        web_token = unquote(web_token)
-                        logger.debug("Decoded URL-encoded token")
-                    logger.info("✓ Found webToken on API server!")
-                    break
-
-            # If not in cookies, try localStorage and sessionStorage
-            if not web_token:
-                logger.info("Token not in cookies, checking localStorage...")
-                try:
-                    # Check all localStorage keys for tokens
-                    all_storage = driver.execute_script("""
-                        let items = {};
-                        for (let i = 0; i < localStorage.length; i++) {
-                            let key = localStorage.key(i);
-                            items[key] = localStorage.getItem(key);
-                        }
-                        return items;
-                    """)
-                    logger.info(f"localStorage keys: {list(all_storage.keys()) if all_storage else 'empty'}")
-
-                    if all_storage:
-                        for key, value in all_storage.items():
-                            if 'token' in key.lower() or 'webtoken' in key.lower():
-                                logger.info(f"Found potential token in localStorage[{key}]")
-                                web_token = value
-                                break
-                except Exception as e:
-                    logger.debug(f"localStorage check failed: {e}")
-
-            if not web_token:
-                logger.info("Token not in localStorage, checking sessionStorage...")
-                try:
-                    # Check all sessionStorage keys for tokens
-                    all_session = driver.execute_script("""
-                        let items = {};
-                        for (let i = 0; i < sessionStorage.length; i++) {
-                            let key = sessionStorage.key(i);
-                            items[key] = sessionStorage.getItem(key);
-                        }
-                        return items;
-                    """)
-                    logger.info(f"sessionStorage keys: {list(all_session.keys()) if all_session else 'empty'}")
-
-                    if all_session:
-                        for key, value in all_session.items():
-                            if 'token' in key.lower() or 'webtoken' in key.lower():
-                                logger.info(f"Found potential token in sessionStorage[{key}]")
-                                web_token = value
-                                break
-                except Exception as e:
-                    logger.debug(f"sessionStorage check failed: {e}")
-
-            # Also check for other possible token names
-            if not web_token:
-                logger.info("Checking for alternative token names...")
-                for alt_name in ['token', 'authToken', 'accessToken', 'jwt']:
-                    for cookie in cookies:
-                        if alt_name.lower() in cookie['name'].lower():
-                            logger.info(f"Found potential token in cookie: {cookie['name']}")
-                            web_token = cookie['value']
-                            break
-                    if web_token:
-                        break
-
-            if not web_token:
-                logger.error("Failed to extract token from cookies, localStorage, or sessionStorage")
-                logger.info("Saving screenshot and page source for debugging...")
-                driver.save_screenshot("login_failed.png")
-                with open("page_source.html", "w", encoding="utf-8") as f:
-                    f.write(driver.page_source)
-                logger.info("Current URL: " + driver.current_url)
-                return None, None
-
-            logger.info(f"✓ Token extracted successfully")
-            return web_token, None
-
-        except Exception as e:
-            logger.error(f"Login failed: {e}")
-            import traceback
-            traceback.print_exc()
-
-            if driver:
-                try:
-                    driver.save_screenshot("error.png")
-                except:
-                    pass
-
-            return None, None
-
-        finally:
-            if driver:
-                driver.quit()
-                logger.info("Browser closed")
+        return None
 
     def get_homework(self, token, student_params):
         """
@@ -599,6 +347,7 @@ class SmartSchoolMonitor:
             session.verify = False
 
             # Set cookies
+            logger.debug(f"Token length: {len(token)}, starts with: {token[:50]}...")
             session.cookies.set('webToken', token)
             session.cookies.set('input', '0')
 
@@ -613,11 +362,14 @@ class SmartSchoolMonitor:
                 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
             }
 
+            logger.debug(f"Posting to API with student_params: {student_params}")
+
             # POST with student parameters
             response = session.post(api_url, json=student_params, headers=headers, timeout=10)
             response.raise_for_status()
 
             data = response.json()
+            logger.debug(f"API response status: {data.get('status')}, full response: {data}")
 
             if data.get('status') == True:
                 logger.info(f"Successfully retrieved homework data")
@@ -695,19 +447,17 @@ class SmartSchoolMonitor:
 
             # Get new token if needed
             if need_new_token:
-                logger.info(f"Getting new token for {student_name}...")
-                token, params_from_login = self.login_with_selenium(username, password)
+                logger.info(f"Need new token for {student_name}")
+                token = self.request_manual_token(username)
 
                 if not token:
-                    logger.error(f"Failed to get token for {student_name}")
+                    logger.error(f"No token available for {student_name}")
+                    logger.error(f"Please provide token in config/token.txt")
                     return
-
-                if params_from_login:
-                    student_params = params_from_login
 
                 # Cache the new token
                 self.save_token_cache(username, token, student_params)
-                logger.info(f"✓ New token cached for {student_name}")
+                logger.info(f"✓ Token cached for {student_name}")
 
             if not student_params:
                 logger.error(f"No student parameters available for {student_name}")
@@ -901,7 +651,7 @@ class SmartSchoolMonitor:
 
     def start(self):
         """Start the monitor"""
-        logger.info("Starting SmartSchool Homework Monitor v2 (with Selenium)")
+        logger.info("Starting SmartSchool Homework Monitor v2 (Manual Token Mode)")
 
         self.schedule_checks()
 
