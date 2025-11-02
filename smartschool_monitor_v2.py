@@ -9,7 +9,6 @@ from loguru import logger
 import apprise
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from urllib.parse import unquote
 import hashlib
 
 # MQTT support (optional)
@@ -260,12 +259,7 @@ class SmartSchoolMonitor:
                 logger.info(f"Cached token for {username} is expired (time-based)")
                 return None
 
-            # URL-decode the token if it's encoded
-            token = user_cache.get('token', '')
-            if token and '%' in token:
-                user_cache['token'] = unquote(token)
-                logger.debug("Decoded URL-encoded token from cache")
-
+            # Keep token as-is (URL-encoded) - browsers send cookies URL-encoded
             logger.info(f"Using cached token for {username}")
             return user_cache
 
@@ -324,10 +318,7 @@ class SmartSchoolMonitor:
             token = token_file.read_text().strip()
             if token:
                 logger.info("Found token in config/token.txt")
-                # URL-decode the token if it's encoded
-                if '%' in token:
-                    token = unquote(token)
-                    logger.debug("Decoded URL-encoded token from file")
+                # Keep token as-is (URL-encoded) - browsers send cookies URL-encoded
                 return token
 
         return None
@@ -355,11 +346,16 @@ class SmartSchoolMonitor:
             headers = {
                 'Content-Type': 'application/json',
                 'Accept': 'application/json, text/plain, */*',
+                'Accept-Encoding': 'gzip, deflate, br, zstd',
+                'Accept-Language': 'en-US,en;q=0.9,he;q=0.8',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache',
                 'language': 'he',
                 'rememberme': '0',
                 'origin': 'https://webtop.smartschool.co.il',
                 'referer': 'https://webtop.smartschool.co.il/',
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
+                'x-xsrf-token': ''
             }
 
             logger.debug(f"Posting to API with student_params: {student_params}")
