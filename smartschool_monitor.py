@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import requests
 import schedule
 import time
@@ -11,15 +12,23 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import hashlib
 
+# Try to use curl_cffi for better browser impersonation (like webtop_client.py)
+try:
+    from curl_cffi import requests as curl_requests
+    CURL_CFFI_AVAILABLE = True
+except ImportError:
+    CURL_CFFI_AVAILABLE = False
+    logger.warning("curl_cffi not installed. Using standard requests. Install with: pip install curl_cffi")
+
 # Configure logging
-log_dir = Path("/app/logs")
+log_dir = Path("/app/logs") if Path("/app").exists() else Path("./logs")
 log_dir.mkdir(exist_ok=True)
 logger.add(f"{log_dir}/smartschool-monitor.log", rotation="500 MB", retention="7 days")
 
 class SmartSchoolMonitor:
     def __init__(self):
-        self.config_path = Path("/app/config/config.yaml")
-        self.state_file = Path("/app/config/homework_state.json")
+        self.config_path = Path("/app/config/config.yaml") if Path("/app/config").exists() else Path("./config/config.yaml")
+        self.state_file = Path("/app/config/homework_state.json") if Path("/app/config").exists() else Path("./config/homework_state.json")
         self.students = []
         self.notifiers = []
         self.load_config()
@@ -82,72 +91,364 @@ class SmartSchoolMonitor:
 
     def create_session(self):
         """Create a requests session with retry strategy"""
-        session = requests.Session()
-        retry_strategy = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["HEAD", "GET", "OPTIONS", "POST"]
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
-        session.verify = False  # Ignore SSL errors for SmartSchool
+        # Use curl_cffi if available for better browser impersonation
+        if CURL_CFFI_AVAILABLE:
+            session = curl_requests.Session(impersonate="chrome")
+        else:
+            session = requests.Session()
+            retry_strategy = Retry(
+                total=3,
+                backoff_factor=1,
+                status_forcelist=[429, 500, 502, 503, 504],
+                allowed_methods=["HEAD", "GET", "OPTIONS", "POST"]
+            )
+            adapter = HTTPAdapter(max_retries=retry_strategy)
+            session.mount("http://", adapter)
+            session.mount("https://", adapter)
+            session.verify = False  # Ignore SSL errors for SmartSchool
+
+        # Set desktop browser user agent
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
+        })
         return session
 
     def login(self, session, username, password):
-        """Login to SmartSchool and get webToken"""
-        try:
-            login_url = "https://webtop.smartschool.co.il/account/login"
-            
-            # Get login page to extract any CSRF tokens if needed
-            response = session.get(login_url)
-            response.raise_for_status()
-            
-            # Attempt login
-            login_data = {
-                'username': username,
-                'password': password
-            }
-            
-            response = session.post(login_url, data=login_data)
-            response.raise_for_status()
-            
-            # Extract webToken from cookies
-            cookies = session.cookies.get_dict()
-            if 'webToken' in cookies:
-                logger.info(f"Successfully logged in as {username}")
-                return session, cookies['webToken']
-            else:
-                # Try to get token from response or other sources
-                logger.warning(f"webToken not found in cookies for {username}")
-                # The token might be set in a redirect or in local storage
-                # For now, we'll return the session as-is
-                return session, None
-                
-        except Exception as e:
-            logger.error(f"Login failed for {username}: {e}")
-            return None, None
+        """Login to SmartSchool - tries web portal first, then mobile API fallback"""
+        # Try web portal login first
+        result = self._login_web_portal(session, username, password)
+        if result[0] and result[1]:
+            return result
 
-    def get_homework(self, session, web_token):
-        """Fetch homework from SmartSchool API"""
+        # Fall back to mobile API login
+        logger.info("Web portal login failed, trying mobile API...")
+        return self._login_mobile(session, username, password)
+
+    def _login_web_portal(self, session, username, password):
+        """Login via webtopserver API (like webtop_client.py)"""
+        try:
+            base_url = "https://webtop.smartschool.co.il"
+            api_url = "https://webtopserver.smartschool.co.il"
+
+            # Step 1: Get the login page to establish session
+            session.get(f"{base_url}/account/login")
+
+            # Step 2: Login via webtopserver API
+            login_url = f"{api_url}/server/api/user/LoginByUserNameAndPassword"
+
+            # Generate unique ID (device fingerprint)
+            unique_id = hashlib.sha1(f"{username}-webtop-python".encode()).hexdigest()
+
+            # Device data JSON
+            device_data = {
+                "isMobile": False,
+                "isTablet": False,
+                "isDesktop": True,
+                "getDeviceType": "Desktop",
+                "os": "Windows",
+                "osVersion": "10",
+                "browser": "Chrome",
+                "browserVersion": "120.0.0.0",
+                "browserMajorVersion": 120,
+                "screen_resolution": "1920 x 1080",
+                "cookies": True,
+                "userAgent": session.headers.get("User-Agent", "")
+            }
+
+            # Set headers
+            session.headers.update({
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/plain, */*",
+                "Origin": base_url,
+                "Referer": f"{base_url}/",
+                "language": "he",
+                "rememberme": "0",
+            })
+
+            # Build login payload
+            login_payload = {
+                "UserName": username,
+                "Password": password,
+                "Data": "",
+                "captcha": "",
+                "RememberMe": False,
+                "BiometricLogin": "",
+                "UniqueId": unique_id,
+                "deviceDataJson": json.dumps(device_data)
+            }
+
+            response = session.post(login_url, json=login_payload)
+
+            if response.status_code == 200:
+                # Check if webToken cookie was set
+                cookies = session.cookies.get_dict() if hasattr(session.cookies, 'get_dict') else dict(session.cookies)
+                if "webToken" in cookies:
+                    try:
+                        data = response.json()
+                        user_id = (
+                            data.get("userId") or
+                            data.get("UserId") or
+                            data.get("id") or
+                            data.get("Id")
+                        )
+
+                        # Only consider success if we have user ID or status is true
+                        # This handles "half-authenticated" states where user is blocked
+                        if user_id or data.get("status") or data.get("success"):
+                            logger.info(f"Web portal login successful for {username}")
+                            return session, cookies["webToken"], user_id
+                    except:
+                        pass
+
+                    # Cookie exists but no user ID/success - might be blocked
+                    logger.warning("Got webToken cookie but no valid user ID - may be blocked")
+
+                # Check response for success without cookie
+                try:
+                    data = response.json()
+                    if data.get("status") or data.get("success") or data.get("token"):
+                        logger.info(f"Web portal login successful for {username}")
+                        return session, data.get("token"), data.get("userId")
+                except:
+                    pass
+
+            logger.warning(f"Web portal login failed for {username}")
+            return None, None, None
+
+        except Exception as e:
+            logger.error(f"Web portal login error: {e}")
+            return None, None, None
+
+    def _login_mobile(self, session, username, password):
+        """Login via mobile API (fallback)"""
+        try:
+            mobile_url = "https://www.webtop.co.il/mobilev2/"
+            api_endpoint = "https://www.webtop.co.il/mobilev2/api/"
+
+            # Step 1: Fetch login page to get cookies and security tokens
+            response = session.get(f"{mobile_url}default.aspx")
+            if response.status_code != 200:
+                logger.error(f"Failed to fetch mobile login page: {response.status_code}")
+                return None, None, None
+
+            html = response.text
+
+            # Extract platform
+            platform = self._extract_platform(html) or "web"
+
+            # Extract security token
+            security_id, security_value = self._extract_security_data(html)
+
+            # Step 2: Build and send login request
+            login_url = f"{api_endpoint}?platform={platform}"
+
+            login_data = {
+                "action": "login",
+                "rememberMe": "1",
+                "captcha": "",
+                "secondsToLogin": "23",
+                "username": username,
+                "password": password,
+            }
+
+            # Add security token if found
+            if security_id and security_value:
+                login_data[security_id] = security_value
+
+            # Set content type for form data
+            session.headers.update({
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "Origin": "https://www.webtop.co.il",
+                "Referer": "https://www.webtop.co.il/mobilev2/default.aspx",
+            })
+
+            response = session.post(login_url, data=login_data)
+
+            if response.status_code == 200:
+                try:
+                    data = response.json()
+
+                    if data.get("error"):
+                        logger.error(f"Mobile login error: {data.get('error')}")
+                        return None, None, None
+
+                    if data.get("refresh"):
+                        logger.error("Mobile login requires CAPTCHA")
+                        return None, None, None
+
+                    token = data.get("token") or data.get("Token")
+                    user_id = (
+                        data.get("userId") or
+                        data.get("UserId") or
+                        data.get("id") or
+                        data.get("userID")
+                    )
+
+                    # Try to extract user ID from token if not in response
+                    if not user_id and token and "$" in token:
+                        parts = token.split("$")
+                        if parts and parts[0].isdigit():
+                            user_id = parts[0]
+
+                    if token or user_id:
+                        logger.info(f"Mobile API login successful for {username}")
+                        # Store platform for later API calls
+                        session._platform = platform
+                        return session, token, user_id
+
+                except Exception as e:
+                    logger.error(f"Failed to parse mobile login response: {e}")
+
+            logger.error(f"Mobile API login failed for {username}")
+            return None, None, None
+
+        except Exception as e:
+            logger.error(f"Mobile login error: {e}")
+            return None, None, None
+
+    def _extract_platform(self, html):
+        """Extract platform identifier from login page"""
+        match = re.search(r'<input[^>]*id=["\']platform["\'][^>]*value=["\']([^"\']+)["\']', html, re.IGNORECASE)
+        if match:
+            return match.group(1)
+        match = re.search(r'<input[^>]*value=["\']([^"\']+)["\'][^>]*id=["\']platform["\']', html, re.IGNORECASE)
+        if match:
+            return match.group(1)
+        return None
+
+    def _extract_security_data(self, html):
+        """Extract security token from captchaWrapper"""
+        captcha_wrapper_match = re.search(
+            r'<div[^>]*id=["\']captchaWrapper["\'][^>]*>(.*?)</div>',
+            html,
+            re.IGNORECASE | re.DOTALL
+        )
+
+        if captcha_wrapper_match:
+            wrapper_content = captcha_wrapper_match.group(1)
+            hidden_match = re.search(
+                r'<input[^>]*type=["\']hidden["\'][^>]*id=["\']([^"\']+)["\'][^>]*value=["\']([^"\']*)["\']',
+                wrapper_content,
+                re.IGNORECASE
+            )
+            if hidden_match:
+                return hidden_match.group(1), hidden_match.group(2)
+
+            hidden_match = re.search(
+                r'<input[^>]*id=["\']([^"\']+)["\'][^>]*value=["\']([^"\']*)["\']',
+                wrapper_content,
+                re.IGNORECASE
+            )
+            if hidden_match:
+                return hidden_match.group(1), hidden_match.group(2)
+
+        return None, None
+
+    def get_homework(self, session, web_token, user_id=None):
+        """Fetch homework from SmartSchool API - tries web API first, then mobile fallback"""
+        # Try web API first
+        result = self._get_homework_web(session, web_token)
+        if result is not None:
+            return result
+
+        # Fall back to mobile API
+        logger.info("Web homework API failed, trying mobile API...")
+        return self._get_homework_mobile(session, user_id)
+
+    def _get_homework_web(self, session, web_token):
+        """Fetch homework from webtopserver API"""
         try:
             api_url = "https://webtopserver.smartschool.co.il/server/api/PupilCard/GetPupilLessonsAndHomework"
-            
-            params = {
-                'webToken': web_token
+
+            # Set headers
+            web_headers = {
+                "Accept": "application/json, text/plain, */*",
+                "Content-Type": "application/json",
+                "Origin": "https://webtop.smartschool.co.il",
+                "Referer": "https://webtop.smartschool.co.il/",
+                "language": "he",
+                "rememberme": "0",
             }
-            
-            response = session.get(api_url, params=params, timeout=10)
-            response.raise_for_status()
-            
-            homework_data = response.json()
-            logger.debug(f"Retrieved homework data: {type(homework_data)}")
-            
-            return homework_data
-            
+
+            # Make request - relies on webToken cookie
+            response = session.post(api_url, json={}, headers=web_headers, timeout=10)
+
+            if response.status_code == 200:
+                data = response.json()
+
+                if data.get("status") and data.get("data"):
+                    logger.info("Successfully retrieved homework from web API")
+                    return data
+
+                # Check for "Invalid Request" error in Hebrew (often sent when blocked)
+                if "בקשה לא-חוקית" in str(data):
+                    logger.warning("Web API returned 'Invalid Request' (בקשה לא-חוקית) - falling back to mobile")
+                    return None
+
+                # Check for status: false
+                if isinstance(data, dict) and data.get("status") is False:
+                    error_desc = data.get("errorDescription", "Unknown error")
+                    logger.warning(f"Web API returned error: {error_desc} - falling back to mobile")
+                    return None
+
+                return data
+
+            if response.status_code == 401:
+                logger.warning("Web API returned 401 - falling back to mobile")
+                return None
+
+            logger.warning(f"Web API failed with status {response.status_code}")
+            return None
+
         except Exception as e:
-            logger.error(f"Failed to get homework: {e}")
+            logger.error(f"Web homework API error: {e}")
+            return None
+
+    def _get_homework_mobile(self, session, user_id):
+        """Fetch homework from mobile API (fallback)"""
+        try:
+            platform = getattr(session, '_platform', 'web')
+            api_endpoint = f"https://www.webtop.co.il/mobilev2/api/?platform={platform}"
+
+            # Set headers for mobile API
+            mobile_headers = {
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "Origin": "https://www.webtop.co.il",
+                "Referer": "https://www.webtop.co.il/mobilev2/default.aspx",
+            }
+
+            # Try multiple homework-related actions
+            actions_to_try = ["loadHomeWork", "getHomeWork", "loadSchedule", "getSchedule", "loadLessons"]
+
+            for action_name in actions_to_try:
+                data = {"action": action_name}
+                if user_id:
+                    data["userId"] = user_id
+
+                logger.debug(f"Trying mobile API action: {action_name}")
+                response = session.post(api_endpoint, data=data, headers=mobile_headers, timeout=10)
+
+                if response.status_code == 200:
+                    result = response.json()
+                    logger.debug(f"Mobile API response for {action_name}: {str(result)[:300]}")
+
+                    # Check if we got actual data (not empty and not error)
+                    if result and not result.get("error"):
+                        # Check if dict has meaningful content (more than just empty or meta fields)
+                        if isinstance(result, dict) and len(result) > 0:
+                            logger.info(f"Got data from mobile API action '{action_name}': keys={list(result.keys())}")
+                            return result
+                        elif isinstance(result, list) and len(result) > 0:
+                            logger.info(f"Got {len(result)} items from mobile API action '{action_name}'")
+                            return result
+
+            logger.warning("All mobile API actions returned empty or error")
+            return None
+
+        except Exception as e:
+            logger.error(f"Mobile homework API error: {e}")
             return None
 
     def hash_homework(self, homework_item):
@@ -163,18 +464,24 @@ class SmartSchoolMonitor:
         """Check for new homework for a student"""
         try:
             session = self.create_session()
-            
-            # Login
-            session, web_token = self.login(session, username, password)
+
+            # Login (returns session, token, user_id)
+            session, web_token, user_id = self.login(session, username, password)
             if not session or not web_token:
                 logger.error(f"Failed to get valid session for {student_name}")
                 return
-            
-            # Get homework
-            homework_data = self.get_homework(session, web_token)
+
+            # Get homework (pass user_id for mobile API fallback)
+            homework_data = self.get_homework(session, web_token, user_id)
+            logger.info(f"Homework data received: type={type(homework_data)}, value={str(homework_data)[:500] if homework_data else 'None/Empty'}")
             if not homework_data:
                 logger.warning(f"No homework data for {student_name}")
                 return
+
+            # Debug: log the structure of homework_data
+            logger.info(f"Homework data type: {type(homework_data)}")
+            logger.info(f"Homework data keys: {homework_data.keys() if isinstance(homework_data, dict) else 'N/A'}")
+            logger.info(f"Homework data sample: {str(homework_data)[:500]}")
             
             # Initialize state for this student if needed
             if student_name not in self.homework_state:

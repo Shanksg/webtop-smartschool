@@ -9,7 +9,17 @@ from loguru import logger
 import apprise
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from urllib.parse import unquote
 import hashlib
+import re
+
+# Playwright for browser-based scraping (fallback when API is blocked)
+try:
+    from playwright.sync_api import sync_playwright
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
+    logger.warning("playwright not installed. Browser scraping unavailable. Install with: pip install playwright && playwright install chromium")
 
 # MQTT support (optional)
 try:
@@ -259,7 +269,12 @@ class SmartSchoolMonitor:
                 logger.info(f"Cached token for {username} is expired (time-based)")
                 return None
 
-            # Keep token as-is (URL-encoded) - browsers send cookies URL-encoded
+            # URL-decode the token if it's encoded
+            token = user_cache.get('token', '')
+            if token and '%' in token:
+                user_cache['token'] = unquote(token)
+                logger.debug("Decoded URL-encoded token from cache")
+
             logger.info(f"Using cached token for {username}")
             return user_cache
 
@@ -268,21 +283,11 @@ class SmartSchoolMonitor:
             return None
 
     def validate_token(self, token, student_params):
-        """Test if token is still valid by making API call"""
-        try:
-            logger.info("Validating token...")
-            homework_data = self.get_homework(token, student_params)
-
-            if homework_data is not None:
-                logger.info("✓ Token is valid")
-                return True
-            else:
-                logger.warning("✗ Token is invalid or expired")
-                return False
-
-        except Exception as e:
-            logger.error(f"Token validation failed: {e}")
-            return False
+        """Test if token is still valid - skip validation since API is blocked, will validate during fetch"""
+        # Since API returns "view is blocked" even for valid tokens,
+        # we skip validation here and let the Playwright fetch determine if token works
+        logger.info("Skipping token validation (will validate during fetch)")
+        return True
 
     def save_token_cache(self, username, token, student_params):
         """Save token to cache"""
@@ -318,7 +323,10 @@ class SmartSchoolMonitor:
             token = token_file.read_text().strip()
             if token:
                 logger.info("Found token in config/token.txt")
-                # Keep token as-is (URL-encoded) - browsers send cookies URL-encoded
+                # URL-decode the token if it's encoded
+                if '%' in token:
+                    token = unquote(token)
+                    logger.debug("Decoded URL-encoded token from file")
                 return token
 
         return None
@@ -346,16 +354,11 @@ class SmartSchoolMonitor:
             headers = {
                 'Content-Type': 'application/json',
                 'Accept': 'application/json, text/plain, */*',
-                'Accept-Encoding': 'gzip, deflate, br, zstd',
-                'Accept-Language': 'en-US,en;q=0.9,he;q=0.8',
-                'Cache-Control': 'no-cache',
-                'Pragma': 'no-cache',
                 'language': 'he',
                 'rememberme': '0',
                 'origin': 'https://webtop.smartschool.co.il',
                 'referer': 'https://webtop.smartschool.co.il/',
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
-                'x-xsrf-token': ''
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
             }
 
             logger.debug(f"Posting to API with student_params: {student_params}")
@@ -371,8 +374,13 @@ class SmartSchoolMonitor:
                 logger.info(f"Successfully retrieved homework data")
                 return data.get('data', [])
             else:
-                error_desc = data.get('errorDescription', 'Unknown error')
-                logger.error(f"API returned error: {error_desc}")
+                # Check for "Invalid Request" error in Hebrew (often sent when blocked)
+                # The server returns "Error: בקשה לא-חוקית"
+                if "בקשה לא-חוקית" in str(data):
+                    logger.error(f"API returned 'Invalid Request' (בקשה לא-חוקית) - user may be blocked or token expired")
+                else:
+                    error_desc = data.get('errorDescription', 'Unknown error')
+                    logger.error(f"API returned error: {error_desc}")
                 return None
 
         except Exception as e:
@@ -407,6 +415,117 @@ class SmartSchoolMonitor:
                             'description': item.get('descClass') or ''
                         })
 
+        return homework_items
+
+    def get_homework_playwright(self, token):
+        """
+        Scrape homework from the website using Playwright browser automation.
+        This is used when the API returns 'view is blocked'.
+        """
+        if not PLAYWRIGHT_AVAILABLE:
+            logger.error("Playwright not available for browser scraping")
+            return None
+
+        try:
+            logger.info("Using Playwright browser to scrape homework...")
+
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context(
+                    viewport={'width': 1920, 'height': 1080},
+                    locale='he-IL',
+                )
+
+                # Set the webToken cookie
+                context.add_cookies([{
+                    'name': 'webToken',
+                    'value': token,
+                    'domain': '.smartschool.co.il',
+                    'path': '/',
+                }])
+
+                page = context.new_page()
+
+                # Navigate to the pupil card page
+                logger.info("Navigating to pupil card page...")
+                page.goto('https://webtop.smartschool.co.il/pupilcard', timeout=30000)
+
+                # Wait for content to load
+                time.sleep(5)
+
+                # Get page text content
+                body_text = page.inner_text('body')
+
+                browser.close()
+
+                # Parse the homework from page text
+                return self.parse_homework_from_text(body_text)
+
+        except Exception as e:
+            logger.error(f"Playwright scraping failed: {e}")
+            return None
+
+    def parse_homework_from_text(self, text):
+        """Parse homework items from page text content"""
+        homework_items = []
+        today = datetime.now().strftime('%Y-%m-%d')
+
+        # Split by "שיעור" (lesson) to find lesson blocks
+        # Pattern: subject followed by lesson number, teacher, and homework
+        lines = text.split('\n')
+
+        current_subject = None
+        current_teacher = None
+        in_homework = False
+        homework_text = ""
+
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+
+            # Check for subject headers (common subjects)
+            subjects = ['מתמטיקה', 'חשבון', 'גיאומטריה', 'עברית', 'שפה', 'אנגלית',
+                       'מדע', 'מדעים', 'היסטוריה', 'גאוגרפיה', 'תנ"ך', 'ספרות',
+                       'מדע וטכנולוגיה', 'חינוך גופני', 'אמנות', 'מוזיקה']
+
+            for subj in subjects:
+                if line.startswith(subj) or line == subj:
+                    current_subject = line
+                    break
+
+            # Look for "שיעור X" pattern
+            if re.match(r'שיעור \d+', line):
+                pass  # Just a lesson number marker
+
+            # Check for teacher name (usually comes after lesson number)
+            # Hebrew names pattern
+            if re.match(r'^[א-ת]+(\')?[א-ת]* [א-ת]+$', line):
+                current_teacher = line
+
+            # Look for homework marker
+            if 'שיעורי בית:' in line or 'שיעורי בית' in line:
+                in_homework = True
+                # Extract homework after the colon
+                if ':' in line:
+                    hw = line.split(':', 1)[1].strip()
+                    if hw and hw != 'לא הוזן':
+                        homework_text = hw
+
+            # If we found homework, add it
+            if homework_text and current_subject:
+                homework_items.append({
+                    'date': today,
+                    'subject': current_subject,
+                    'teacher': current_teacher or 'Unknown',
+                    'homework': homework_text,
+                    'description': ''
+                })
+                homework_text = ""
+                in_homework = False
+
+            i += 1
+
+        logger.info(f"Parsed {len(homework_items)} homework items from page")
         return homework_items
 
     def hash_homework(self, homework_item):
@@ -455,21 +574,26 @@ class SmartSchoolMonitor:
                 self.save_token_cache(username, token, student_params)
                 logger.info(f"✓ Token cached for {student_name}")
 
-            if not student_params:
-                logger.error(f"No student parameters available for {student_name}")
-                logger.error("Please set student_params in config or login manually")
-                return
+            # Get homework - try Playwright directly since API is usually blocked
+            homework_items = []
 
-            # Get homework
-            homework_data = self.get_homework(token, student_params)
+            # Try API first if we have student_params (might work sometimes)
+            if student_params:
+                homework_data = self.get_homework(token, student_params)
+                if homework_data:
+                    homework_items = self.extract_homework_items(homework_data)
+                    logger.info(f"Got {len(homework_items)} homework items from API")
 
-            if not homework_data:
-                logger.warning(f"No homework data for {student_name}")
-                return
+            # Use Playwright if API returned nothing
+            if not homework_items:
+                logger.info("Using Playwright browser scraping...")
+                homework_items = self.get_homework_playwright(token)
 
-            # Extract actual homework items
-            homework_items = self.extract_homework_items(homework_data)
-            logger.info(f"Found {len(homework_items)} homework items for {student_name}")
+                if homework_items:
+                    logger.info(f"Got {len(homework_items)} homework items from Playwright")
+                else:
+                    logger.warning(f"No homework data for {student_name} from any source")
+                    return
 
             # Initialize state for this student if needed
             if student_name not in self.homework_state:
@@ -503,15 +627,24 @@ class SmartSchoolMonitor:
 
             # Publish MQTT discovery (first time) and state (always)
             # This creates/updates Home Assistant entities
+            logger.debug("Publishing MQTT discovery...")
             self.publish_mqtt_discovery(student_name)
+            logger.debug("Publishing MQTT state...")
             self.publish_mqtt_state(student_name, homework_items)
+            logger.debug("MQTT publishing done")
 
             # Send notifications if new homework found
             if new_homework:
+                logger.info(f"Sending notification for {len(new_homework)} new items...")
                 self.send_notification(student_name, new_homework)
+                logger.info("Notification sent")
+            else:
+                logger.info("No new homework, skipping notification")
 
             # Save state
+            logger.debug("Saving state...")
             self.save_state()
+            logger.info(f"Check complete for {student_name}")
 
         except Exception as e:
             logger.error(f"Error checking homework for {student_name}: {e}")
